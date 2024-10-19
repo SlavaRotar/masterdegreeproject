@@ -1,51 +1,58 @@
 import socket
 import hashlib
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import os
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+import time
 
-# Клієнтські параметри
-SECRET_KEY = b'secret_shared_key'
-SERVER_IP = '127.0.0.1'
+# Конфігурація клієнта
+SERVER_HOST = '127.0.0.1'
 SERVER_PORT = 65432
+SECRET_KEY = b'SharedSecretKey123'  # Попередньо збережене спільне секретне значення
 
-# Хеш-функція для генерації сесійного ключа
-def generate_session_key(secret, r_s, r_c):
-    return hashlib.sha256(secret + r_s + r_c).digest()
+# Генерація випадкових чисел і сесійного ключа
+def generate_session_key(secret_key, R_C, R_S):
+    combined = secret_key + R_C + R_S
+    return hashlib.sha256(combined).digest()
 
-# Функція для шифрування
-def encrypt_message(key, message):
-    iv = os.urandom(16)  # Ініціалізаційний вектор для AES
-    cipher = Cipher(algorithms.AES(key), modes.CFB(iv))
+# Шифрування повідомлення
+def encrypt_message(key, plaintext):
+    backend = default_backend()
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=backend)
     encryptor = cipher.encryptor()
-    return iv + encryptor.update(message) + encryptor.finalize()
 
-# Функція для розшифрування
-def decrypt_message(key, ciphertext):
-    iv = ciphertext[:16]
-    cipher = Cipher(algorithms.AES(key), modes.CFB(iv))
-    decryptor = cipher.decryptor()
-    return decryptor.update(ciphertext[16:]) + decryptor.finalize()
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(plaintext) + padder.finalize()
 
-# Ініціалізація клієнта
-client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-client_socket.connect((SERVER_IP, SERVER_PORT))
+    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+    return ciphertext
 
-# Етап ініціалізації
-r_s = client_socket.recv(1024)  # Отримуємо випадкове значення від сервера
-r_c = os.urandom(16)
-client_socket.send(r_c)  # Відправляємо своє випадкове значення серверу
+# Емуляція клієнта
+def iot_client():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+        client_socket.connect((SERVER_HOST, SERVER_PORT))
 
-# Генерація сесійного ключа
-session_key = generate_session_key(SECRET_KEY, r_s, r_c)
+        # Генерація випадкового числа клієнта
+        R_C = os.urandom(16)
+        client_socket.sendall(R_C)
 
-# Відправляємо зашифроване повідомлення серверу
-message = b"Hello, server!"
-encrypted_message = encrypt_message(session_key, message)
-client_socket.send(encrypted_message)
+        # Отримання випадкового числа від сервера
+        R_S = client_socket.recv(16)
 
-# Отримуємо зашифроване підтвердження від сервера
-encrypted_response = client_socket.recv(1024)
-server_response = decrypt_message(session_key, encrypted_response)
-print(f"Повідомлення від сервера: {server_response.decode()}")
+        # Генерація сесійного ключа
+        session_key = generate_session_key(SECRET_KEY, R_C, R_S)
 
-client_socket.close()
+        # Шифрування ID клієнта і часової мітки
+        client_id = b'Client_01'
+        timestamp = str(int(time.time())).encode()
+        message = client_id + b'|' + timestamp
+
+        encrypted_message = encrypt_message(session_key, message)
+        client_socket.sendall(encrypted_message)
+
+        # Отримання відповідного повідомлення від сервера
+        response = client_socket.recv(1024)
+        print("Received from server:", response)
+
+iot_client()
